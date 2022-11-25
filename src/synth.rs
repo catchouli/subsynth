@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::{thread::JoinHandle, mem::MaybeUninit, time::Duration};
 use std::sync::{Arc, atomic::{AtomicBool, Ordering}, mpsc::Receiver};
 
@@ -9,7 +10,7 @@ use crate::types::*;
 
 /// The amount of time for the thread to sleep between processing new midi inputs and re-filling
 /// the output ringbuffer
-const THREAD_SLEEP: Duration = Duration::from_millis(5);
+const THREAD_SLEEP: Duration = Duration::from_millis(1);
 
 /// A midi synth that accepts midi input and samples one or more oscillators to produce audio samples
 pub struct MidiSynth {
@@ -59,8 +60,8 @@ impl MidiSynth {
     {
         let time_step = 1.0 / sample_rate as f64;
 
-        let mut midi_note = None;
         let mut time = 0.0;
+        let mut voices: HashSet<u8> = HashSet::new();
 
         std::thread::spawn(move || {
             // Run until cancellation requested
@@ -70,15 +71,11 @@ impl MidiSynth {
                     match msg {
                         MidiMessage::NoteOn(_, e) => {
                             log::debug!("Got note down: {}", e.key);
-                            midi_note = Some(e.key);
+                            voices.insert(e.key);
                         },
                         MidiMessage::NoteOff(_, e) => {
                             log::debug!("Got note up: {}", e.key);
-                            if let Some(cur_key) = midi_note {
-                                if cur_key == e.key {
-                                    midi_note = None;
-                                }
-                            }
+                            voices.remove(&e.key);
                         },
                         _ => {}
                     }
@@ -86,34 +83,34 @@ impl MidiSynth {
 
                 // Fill audio buffer
                 while prod.free_len() > channel_count {
-                    if let Some(midi_note) = midi_note {
-                        // Update time
-                        time += time_step;
+                    let mut sample = 0.0;
 
+                    // A simple averaging coefficient so that the audio doesn't clip
+                    // TODO: figure out the 'proper' way to mix multiple voices
+                    let sample_coeff = if voices.is_empty() { 0.0 } else { 1.0 / voices.len() as f64 };
+
+                    // Update time
+                    time += time_step;
+
+                    for midi_note in &voices {
                         // Calculate frequency of midi note
-                        let freq = 440.0 * f64::powf(2.0, (midi_note as f64 - 69.0) / 12.0);
+                        let freq = 440.0 * f64::powf(2.0, (*midi_note as f64 - 69.0) / 12.0);
 
                         // Sample the network at multiple octaves
                         const OCTAVES: usize = 7;
                         let mut amplitude = 0.5;
                         let mut octave_freq = freq;
-                        let mut sample = 0.0;
 
                         for _ in 0..OCTAVES {
-                            sample += network.evaluate((time, octave_freq)) * amplitude;
+                            sample += network.evaluate((time, octave_freq)) * amplitude * sample_coeff;
                             amplitude *= 0.3;
                             octave_freq *= 2.0;
                         }
+                    }
 
-                        // Push one sample for each channel
-                        let mut samples = std::iter::repeat(sample as f32).take(2);
-                        prod.push_iter(&mut samples);
-                    }
-                    else {
-                        // Push samples with value 0 for each channel
-                        let mut samples = std::iter::repeat(0.0).take(2);
-                        prod.push_iter(&mut samples);
-                    }
+                    // Push one sample for each channel
+                    let mut samples = std::iter::repeat(sample as f32).take(channel_count);
+                    prod.push_iter(&mut samples);
                 }
 
                 // Sleep for a few ms so we aren't just spinning
