@@ -5,6 +5,8 @@ pub mod signal;
 pub mod types;
 pub mod oscillators;
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::{error::Error, thread::sleep, time::Duration};
 use midi_control::MidiMessage;
 use ringbuf::HeapRb;
@@ -15,7 +17,7 @@ use crate::oscillators::SineWaveOscillator;
 use crate::synth::MidiSynth;
 
 /// The size of the audio buffer
-const AUDIO_BUFFER_SIZE: usize = 1024;
+const AUDIO_BUFFER_SIZE: usize = 2048;
 
 fn main() -> Result<(), Box<dyn Error>> {
     // Initialise logging
@@ -50,9 +52,35 @@ fn main() -> Result<(), Box<dyn Error>> {
                                      audio_output.channel_count() as usize,
                                      Box::new(network));
 
+    // Register ctrl-c handler for clean exit
+    let should_exit = Arc::new(AtomicBool::new(false));
+    signal_on_ctrlc(should_exit.clone())?;
+
     // Allow input
-    log::info!("Sleeping...");
-    sleep(Duration::from_secs(100));
+    log::info!("Running... press ctrl-C to exit.");
+    while !should_exit.load(Ordering::Relaxed) {
+        sleep(Duration::from_millis(100));
+    }
+
+    log::info!("Exit requested");
+    Ok(())
+}
+
+/// Adds a handler for ctrl-c that signals that it has been pressed using the given AtomicBool
+fn signal_on_ctrlc(ctrlc_sent: Arc<AtomicBool>) -> Result<(), Box<dyn Error>> {
+    ctrlc_sent.store(false, Ordering::Relaxed);
+
+    ctrlc::set_handler(move || {
+        if !ctrlc_sent.load(Ordering::Relaxed) {
+            // If this is the first time, signal for exit
+            ctrlc_sent.store(true, Ordering::Relaxed);
+        }
+        else {
+            // If ctrl-c is sent more than once, exit immediately
+            log::info!("Immediate exit requested");
+            std::process::exit(1);
+        }
+    })?;
 
     Ok(())
 }

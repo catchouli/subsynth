@@ -69,7 +69,7 @@ impl MidiInput {
 impl Drop for MidiInput {
     fn drop(&mut self) {
         if let Some(connection) = self.connection.take() {
-            log::info!("Closing midi connection");
+            log::info!("Closing midi connection...");
             connection.close();
         }
     }

@@ -70,6 +70,7 @@ impl AudioOutput {
 
 impl Drop for AudioOutput {
     fn drop(&mut self) {
+        log::info!("Closing audio device...");
         drop(&mut self.stream);
     }
 }

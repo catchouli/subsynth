@@ -122,7 +122,7 @@ impl MidiSynth {
 
 impl Drop for MidiSynth {
     fn drop(&mut self) {
-        log::info!("Waiting for oscillator thread to exit...");
+        log::info!("Waiting for midi synth thread to exit...");
         self.thread_run.store(false, Ordering::SeqCst);
         if let Some(thread_handle) = std::mem::take(&mut self.thread_handle) {
             thread_handle.join().unwrap();
