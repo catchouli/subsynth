@@ -1,14 +1,15 @@
-use std::{sync::mpsc::Sender, error::Error};
+//! Types for interacting with audio devices.
 
+use std::{sync::mpsc::Sender, error::Error};
 use midi_control::MidiMessage;
 
-/// An abstraction which allows you to open a midi device and receive midi inputs from it
+/// An abstraction which allows you to open a midi device and receive midi inputs from it.
 pub struct MidiInput {
     connection: Option<midir::MidiInputConnection<Sender<MidiMessage>>>,
 }
 
 impl MidiInput {
-    /// Connect to a midi input device, writing events to the specified sender
+    /// Connect to a midi input device, writing events to the specified sender.
     ///
     /// The device to be connected to can be specified by passing in a value obtained from
     /// MidiInput::devices() to the parameter `device_name`. The device will then send midi
@@ -16,10 +17,10 @@ impl MidiInput {
     pub fn connect(client_name: &str, device_name: &str, sender: Sender<MidiMessage>)
         -> Result<Self, Box<dyn Error>>
     {
-        // Create new midi input
+        // Create new midi input.
         let midi_input = midir::MidiInput::new(client_name)?;
 
-        // Find desired port
+        // Find desired port.
         let midi_ports = midi_input.ports();
         let midi_port = midi_ports
             .iter()
@@ -29,7 +30,7 @@ impl MidiInput {
             })
             .ok_or(format!("Failed to find desired midi device {device_name}"))?;
 
-        // Connect to midi port
+        // Connect to midi port.
         log::info!("Connecting to midi port: {}", device_name);
         let connection = midi_input.connect(
             midi_port,
@@ -49,12 +50,12 @@ impl MidiInput {
         })
     }
 
-    /// Get a list of all midi device names
+    /// Get a list of all midi device names.
     pub fn devices() -> Result<Vec<String>, Box<dyn Error>> {
-        // Create temporary midi input
+        // Create temporary midi input.
         let midi_input = midir::MidiInput::new("SubSynth_EnumerateDevices")?;
 
-        // Enumerate devices and return port names
+        // Enumerate devices and return port names.
         let ports: Vec<String> = midi_input
         .ports()
         .iter()

@@ -1,3 +1,6 @@
+//! Simple synth host that samples a network and outputs samples to a ring buffer at a given sample
+//! rate.
+
 use std::collections::HashSet;
 use std::{thread::JoinHandle, mem::MaybeUninit, time::Duration};
 use std::sync::{Arc, atomic::{AtomicBool, Ordering}, mpsc::Receiver};
@@ -9,10 +12,10 @@ use crate::signal::Signal;
 use crate::types::*;
 
 /// The amount of time for the thread to sleep between processing new midi inputs and re-filling
-/// the output ringbuffer
+/// the output ringbuffer.
 const THREAD_SLEEP: Duration = Duration::from_millis(1);
 
-/// A midi synth that accepts midi input and samples one or more oscillators to produce audio samples
+/// A midi synth that accepts midi input and samples one or more oscillators to produce audio samples.
 pub struct MidiSynth {
     thread_run: Arc<AtomicBool>,
     thread_handle: Option<JoinHandle<()>>,
@@ -20,7 +23,7 @@ pub struct MidiSynth {
 
 impl MidiSynth {
     /// Create a new midi synth controlled by midi messages, producing samples to the
-    /// given ring buffer, at the given sample rate and number of channels
+    /// given ring buffer, at the given sample rate and number of channels.
     pub fn new(receiver: Receiver<MidiMessage>,
                prod: Producer<f32, Arc<SharedRb<f32, Vec<MaybeUninit<f32>>>>>,
                sample_rate: usize,
@@ -30,10 +33,10 @@ impl MidiSynth {
     {
         log::info!("Starting oscillator thread");
 
-        // Create atomic bool for controlling thread exit
+        // Create atomic bool for controlling thread exit.
         let thread_run = Arc::new(AtomicBool::new(true));
 
-        // Spawn worker thread
+        // Spawn worker thread.
         let thread_handle = Some(Self::spawn_thread(
             receiver,
             prod,
@@ -49,7 +52,7 @@ impl MidiSynth {
         }
     }
 
-    /// Spawn the sampling thread
+    /// Spawn the sampling thread.
     fn spawn_thread(receiver: Receiver<MidiMessage>,
                     mut prod: Producer<f32, Arc<SharedRb<f32, Vec<MaybeUninit<f32>>>>>,
                     sample_rate: usize,
@@ -64,9 +67,9 @@ impl MidiSynth {
         let mut voices: HashSet<u8> = HashSet::new();
 
         std::thread::spawn(move || {
-            // Run until cancellation requested
+            // Run until cancellation requested.
             while thread_run.load(Ordering::SeqCst) {
-                // Receive new midi notes
+                // Receive new midi notes.
                 while let Ok(msg) = receiver.try_recv() {
                     match msg {
                         MidiMessage::NoteOn(_, e) => {
@@ -81,22 +84,22 @@ impl MidiSynth {
                     }
                 }
 
-                // Fill audio buffer
+                // Fill audio buffer.
                 while prod.free_len() > channel_count {
                     let mut sample = 0.0;
 
                     // A simple averaging coefficient so that the audio doesn't clip
-                    // TODO: figure out the 'proper' way to mix multiple voices
+                    // TODO: figure out the 'proper' way to mix multiple voices.
                     let sample_coeff = if voices.is_empty() { 0.0 } else { 1.0 / voices.len() as f64 };
 
                     // Update time
                     time += time_step;
 
                     for midi_note in &voices {
-                        // Calculate frequency of midi note
+                        // Calculate frequency of midi note.
                         let freq = 440.0 * f64::powf(2.0, (*midi_note as f64 - 69.0) / 12.0);
 
-                        // Sample the network at multiple octaves
+                        // Sample the network at multiple octaves.
                         const OCTAVES: usize = 7;
                         let mut amplitude = 0.5;
                         let mut octave_freq = freq;
@@ -108,12 +111,12 @@ impl MidiSynth {
                         }
                     }
 
-                    // Push one sample for each channel
+                    // Push one sample for each channel.
                     let mut samples = std::iter::repeat(sample as f32).take(channel_count);
                     prod.push_iter(&mut samples);
                 }
 
-                // Sleep for a few ms so we aren't just spinning
+                // Sleep for a few ms so we aren't just spinning.
                 std::thread::sleep(THREAD_SLEEP);
             }
         })
