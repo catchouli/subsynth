@@ -1,14 +1,18 @@
 pub mod audio_device;
 pub mod midi_device;
 pub mod synth;
+pub mod signal;
+pub mod types;
+pub mod oscillators;
 
 use std::{error::Error, thread::sleep, time::Duration};
 use midi_control::MidiMessage;
 use ringbuf::HeapRb;
 
-use audio_device::AudioOutput;
-use midi_device::MidiInput;
-use synth::SineWaveOscillator;
+use crate::audio_device::AudioOutput;
+use crate::midi_device::MidiInput;
+use crate::oscillators::SineWaveOscillator;
+use crate::synth::MidiSynth;
 
 /// The size of the audio buffer
 const AUDIO_BUFFER_SIZE: usize = 1024;
@@ -16,6 +20,9 @@ const AUDIO_BUFFER_SIZE: usize = 1024;
 fn main() -> Result<(), Box<dyn Error>> {
     // Initialise logging
     env_logger::init();
+
+    // Create synth network
+    let network = SineWaveOscillator::new();
 
     // Create mpsc channel for midi data
     let (sender, receiver) = std::sync::mpsc::channel::<MidiMessage>();
@@ -37,10 +44,11 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut _midi_input = MidiInput::connect("SubSynth", midi_device, sender)?;
 
     // Create sine wave oscillator
-    let _oscillator = SineWaveOscillator::new(receiver,
-                                             prod,
-                                             audio_output.sample_rate(),
-                                             audio_output.channel_count() as u32);
+    let _oscillator = MidiSynth::new(receiver,
+                                     prod,
+                                     audio_output.sample_rate() as usize,
+                                     audio_output.channel_count() as usize,
+                                     Box::new(network));
 
     // Allow input
     log::info!("Sleeping...");

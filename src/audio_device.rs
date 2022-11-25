@@ -37,17 +37,10 @@ impl AudioOutput {
         let stream = device.build_output_stream(
             &config,
             move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
-                // Fill frames with samples from ring buffer
-                for frame in data.chunks_mut(config.channels as usize) {
-                    if cons.len() > config.channels as usize {
-                        for sample in frame.iter_mut() {
-                            if let Some(next_sample) = cons.pop() {
-                                *sample = next_sample;
-                            }
-                            else {
-                                *sample = 0.0;
-                            }
-                        }
+                // Feed samples from ring buffer
+                for sample in data.iter_mut() {
+                    if let Some(next_sample) = cons.pop() {
+                        *sample = next_sample;
                     }
                 }
             },

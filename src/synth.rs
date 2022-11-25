@@ -1,46 +1,79 @@
-use std::{thread::JoinHandle, mem::MaybeUninit, time::Duration, f64::consts::PI};
+use std::{thread::JoinHandle, mem::MaybeUninit, time::Duration};
 use std::sync::{Arc, atomic::{AtomicBool, Ordering}, mpsc::Receiver};
 
 use midi_control::MidiMessage;
 use ringbuf::{Producer, SharedRb};
 
-/// A sine wave oscillator that accepts midi input and outputs a monophonic pure sine wave tone
-pub struct SineWaveOscillator {
+use crate::signal::Signal;
+use crate::types::*;
+
+/// The amount of time for the thread to sleep between processing new midi inputs and re-filling
+/// the output ringbuffer
+const THREAD_SLEEP: Duration = Duration::from_millis(5);
+
+/// A midi synth that accepts midi input and samples one or more oscillators to produce audio samples
+pub struct MidiSynth {
     thread_run: Arc<AtomicBool>,
     thread_handle: Option<JoinHandle<()>>,
 }
 
-impl SineWaveOscillator {
-    /// Create a new sine wave oscillator controlled by midi messages
+impl MidiSynth {
+    /// Create a new midi synth controlled by midi messages, producing samples to the
+    /// given ring buffer, at the given sample rate and number of channels
     pub fn new(receiver: Receiver<MidiMessage>,
-               mut prod: Producer<f32, Arc<SharedRb<f32, Vec<MaybeUninit<f32>>>>>,
-               sample_rate: u32,
-               channel_count: u32)
+               prod: Producer<f32, Arc<SharedRb<f32, Vec<MaybeUninit<f32>>>>>,
+               sample_rate: usize,
+               channel_count: usize,
+               network: Box<dyn Signal<(Frequency, Time), Sample>>)
         -> Self
     {
-        let samples_per_second = sample_rate * channel_count;
-        let time_step = 1.0 / samples_per_second as f64;
-
-        // Start thread
         log::info!("Starting oscillator thread");
-        let thread_run_local = Arc::new(AtomicBool::new(true));
-        let thread_run = thread_run_local.clone();
 
-        let thread_handle = std::thread::spawn(move || {
-            let mut midi_note = None;
-            let mut time = 0.0;
+        // Create atomic bool for controlling thread exit
+        let thread_run = Arc::new(AtomicBool::new(true));
 
+        // Spawn worker thread
+        let thread_handle = Some(Self::spawn_thread(
+            receiver,
+            prod,
+            sample_rate,
+            channel_count,
+            network,
+            thread_run.clone()
+        ));
+
+        Self {
+            thread_run,
+            thread_handle,
+        }
+    }
+
+    /// Spawn the sampling thread
+    fn spawn_thread(receiver: Receiver<MidiMessage>,
+                    mut prod: Producer<f32, Arc<SharedRb<f32, Vec<MaybeUninit<f32>>>>>,
+                    sample_rate: usize,
+                    channel_count: usize,
+                    mut network: Box<dyn Signal<(Frequency, Time), Sample>>,
+                    thread_run: Arc<AtomicBool>)
+        -> JoinHandle<()>
+    {
+        let time_step = 1.0 / sample_rate as f64;
+
+        let mut midi_note = None;
+        let mut time = 0.0;
+
+        std::thread::spawn(move || {
             // Run until cancellation requested
             while thread_run.load(Ordering::SeqCst) {
-                // Receive new midi note
+                // Receive new midi notes
                 while let Ok(msg) = receiver.try_recv() {
                     match msg {
                         MidiMessage::NoteOn(_, e) => {
-                            log::info!("Got note down: {}", e.key);
+                            log::debug!("Got note down: {}", e.key);
                             midi_note = Some(e.key);
                         },
                         MidiMessage::NoteOff(_, e) => {
-                            log::info!("Got note up: {}", e.key);
+                            log::debug!("Got note up: {}", e.key);
                             if let Some(cur_key) = midi_note {
                                 if cur_key == e.key {
                                     midi_note = None;
@@ -52,41 +85,45 @@ impl SineWaveOscillator {
                 }
 
                 // Fill audio buffer
-                while prod.free_len() > channel_count as usize {
+                while prod.free_len() > channel_count {
                     if let Some(midi_note) = midi_note {
                         // Update time
-                        // TODO: this is maybe a bit weird, since we could be putting different
-                        // time samples in different channels. Ideally we'd generate the samples
-                        // for each channel at the same time.
                         time += time_step;
 
-                        // Calculate frequency and sample sine wave
+                        // Calculate frequency of midi note
                         let freq = 440.0 * f64::powf(2.0, (midi_note as f64 - 69.0) / 12.0);
-                        let sample = SineWaveOscillator::sample_sine(time, freq);
 
-                        prod.push(sample as f32).unwrap();
+                        // Sample the network at multiple octaves
+                        const OCTAVES: usize = 7;
+                        let mut amplitude = 0.5;
+                        let mut octave_freq = freq;
+                        let mut sample = 0.0;
+
+                        for _ in 0..OCTAVES {
+                            sample += network.evaluate((time, octave_freq)) * amplitude;
+                            amplitude *= 0.3;
+                            octave_freq *= 2.0;
+                        }
+
+                        // Push one sample for each channel
+                        let mut samples = std::iter::repeat(sample as f32).take(2);
+                        prod.push_iter(&mut samples);
                     }
                     else {
-                        prod.push(0.0).unwrap();
+                        // Push samples with value 0 for each channel
+                        let mut samples = std::iter::repeat(0.0).take(2);
+                        prod.push_iter(&mut samples);
                     }
                 }
-                std::thread::sleep(Duration::from_millis(5));
+
+                // Sleep for a few ms so we aren't just spinning
+                std::thread::sleep(THREAD_SLEEP);
             }
-        });
-
-        Self {
-            thread_run: thread_run_local,
-            thread_handle: Some(thread_handle),
-        }
-    }
-
-    /// Sample a sine wave at a given time and frequency
-    fn sample_sine(time: f64, frequency: f64) -> f64 {
-        f64::sin(2.0 * PI * time * frequency)
+        })
     }
 }
 
-impl Drop for SineWaveOscillator {
+impl Drop for MidiSynth {
     fn drop(&mut self) {
         log::info!("Waiting for oscillator thread to exit...");
         self.thread_run.store(false, Ordering::SeqCst);
