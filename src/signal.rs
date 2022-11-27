@@ -1,8 +1,8 @@
 //! A simple frp-like signals implementation.
 
-use std::{f64::consts::PI, cell::RefCell, sync::Arc};
+use std::{f64::consts::PI, sync::{Arc, Mutex}};
 
-type CallbackClosure = Box<dyn FnMut() -> () + 'static>;
+type CallbackClosure = Box<dyn FnMut() -> () + Send + Sync + 'static>;
 
 /// A trait for "signals" which have an input and an output type, and can be evaluated for the
 /// given input.
@@ -13,33 +13,33 @@ pub trait OldSignal<In, Out>: Send {
 
 #[derive(Clone)]
 struct SignalBase<T> {
-    value: Arc<RefCell<Option<T>>>,
-    dependents: Arc<RefCell<Vec<CallbackClosure>>>,
+    value: Arc<Mutex<Option<T>>>,
+    dependents: Arc<Mutex<Vec<CallbackClosure>>>,
 }
 
 impl<T: Clone + PartialEq> SignalBase<T> {
     fn new() -> Self {
         Self {
-            value: Arc::new(RefCell::new(None)),
-            dependents: Arc::new(RefCell::new(Vec::new())),
+            value: Arc::new(Mutex::new(None)),
+            dependents: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
     fn attach<F>(&mut self, closure: F)
-        where F: FnMut() -> () + 'static
+        where F: FnMut() -> () + Send + Sync + 'static
     {
-        self.dependents.borrow_mut().push(Box::new(closure));
+        self.dependents.lock().unwrap().push(Box::new(closure));
     }
 
     fn set(&mut self, value: T) {
-        let mut cur_value = self.value.borrow_mut();
+        let mut cur_value = self.value.lock().unwrap();
         if cur_value.as_ref() != Some(&value) {
             cur_value.replace(value);
 
             // Drop the borrow explicitly so it can be reborrowed in callbacks
             drop(cur_value);
 
-            let mut dependents = self.dependents.borrow_mut();
+            let mut dependents = self.dependents.lock().unwrap();
             for notify_dependent in dependents.iter_mut() {
                 notify_dependent();
             }
@@ -47,7 +47,7 @@ impl<T: Clone + PartialEq> SignalBase<T> {
     }
 
     fn get(&self) -> Option<T> {
-        self.value.borrow().clone()
+        self.value.lock().unwrap().clone()
     }
 }
 
@@ -56,7 +56,10 @@ pub struct Discrete<T> {
     base: SignalBase<T>,
 }
 
-impl<T: Clone + PartialEq + 'static> Discrete<T> {
+impl<T> Discrete<T>
+where
+    T: Clone + PartialEq + Send + Sync + 'static
+{
     pub fn new() -> Self {
         Self {
             base: SignalBase::new(),
@@ -77,11 +80,14 @@ pub struct Continuous<T> {
     base: SignalBase<T>,
 }
 
-impl<T: Clone + PartialEq + 'static> Continuous<T> {
+impl<T> Continuous<T>
+where
+    T: Clone + PartialEq + Send + Sync + 'static,
+{
     fn new1<A, F>(parent: &mut SignalBase<A>, update: F) -> Self
     where
-        A: Clone + PartialEq + 'static,
-        F: Fn(A) -> T + 'static,
+        A: Clone + PartialEq + Send + Sync + 'static,
+        F: Fn(A) -> T + Send + Sync + 'static,
     {
         let signal = Continuous {
             base: SignalBase::new(),
@@ -100,9 +106,9 @@ impl<T: Clone + PartialEq + 'static> Continuous<T> {
 
     fn new2<A, B, F>(parent_a: &mut SignalBase<A>, parent_b: &mut SignalBase<B>, update: F) -> Self
     where
-        A: Clone + PartialEq + 'static,
-        B: Clone + PartialEq + 'static,
-        F: Fn(A, B) -> T + Clone + 'static,
+        A: Clone + PartialEq + Send + Sync + 'static,
+        B: Clone + PartialEq + Send + Sync + 'static,
+        F: Fn(A, B) -> T + Clone + Send + Sync + 'static,
     {
         let signal = Continuous {
             base: SignalBase::new(),
@@ -133,8 +139,8 @@ impl<T: Clone + PartialEq + 'static> Continuous<T> {
 
     pub fn map<F, B>(&mut self, closure: F) -> Continuous<B>
     where
-        B: Clone + PartialEq + 'static,
-        F: Fn(T) -> B + 'static,
+        B: Clone + PartialEq + Send + Sync + 'static,
+        F: Fn(T) -> B + Send + Sync + 'static,
     {
         lift1(self, closure)
     }
@@ -142,19 +148,19 @@ impl<T: Clone + PartialEq + 'static> Continuous<T> {
 
 pub fn lift1<F, A, B>(signal: &mut Continuous<A>, closure: F) -> Continuous<B>
 where
-    A: Clone + PartialEq + 'static,
-    B: Clone + PartialEq + 'static,
-    F: Fn(A) -> B + 'static,
+    A: Clone + PartialEq + Send + Sync + 'static,
+    B: Clone + PartialEq + Send + Sync + 'static,
+    F: Fn(A) -> B + Send + Sync + 'static,
 {
     Continuous::new1(&mut signal.base, closure)
 }
 
 pub fn lift2<F, A, B, C>(signal_a: &mut Continuous<A>, signal_b: &mut Continuous<B>, closure: F) -> Continuous<C>
 where
-    A: Clone + PartialEq + 'static,
-    B: Clone + PartialEq + 'static,
-    C: Clone + PartialEq + 'static,
-    F: Fn(A, B) -> C + Clone + 'static,
+    A: Clone + PartialEq + Send + Sync + 'static,
+    B: Clone + PartialEq + Send + Sync + 'static,
+    C: Clone + PartialEq + Send + Sync + 'static,
+    F: Fn(A, B) -> C + Clone + Send + Sync + 'static,
 {
     Continuous::new2(&mut signal_a.base, &mut signal_b.base, closure)
 }

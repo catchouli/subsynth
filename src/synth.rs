@@ -8,8 +8,7 @@ use std::sync::{Arc, atomic::{AtomicBool, Ordering}, mpsc::Receiver};
 use midi_control::MidiMessage;
 use ringbuf::{Producer, SharedRb};
 
-use crate::signal::OldSignal;
-use crate::types::*;
+use crate::signal::{Continuous, Discrete};
 
 /// The amount of time for the thread to sleep between processing new midi inputs and re-filling
 /// the output ringbuffer.
@@ -25,50 +24,29 @@ impl MidiSynth {
     /// Create a new midi synth controlled by midi messages, producing samples to the
     /// given ring buffer, at the given sample rate and number of channels.
     pub fn new(receiver: Receiver<MidiMessage>,
-               prod: Producer<f32, Arc<SharedRb<f32, Vec<MaybeUninit<f32>>>>>,
+               mut prod: Producer<f32, Arc<SharedRb<f32, Vec<MaybeUninit<f32>>>>>,
                sample_rate: usize,
                channel_count: usize,
-               network: Box<dyn OldSignal<(Frequency, Time), Sample>>)
+               mut input_time: Discrete<f64>,
+               mut input_note: Discrete<u8>,
+               network: Continuous<f64>)
         -> Self
     {
         log::info!("Starting midi synth thread");
 
         // Create atomic bool for controlling thread exit.
         let thread_run = Arc::new(AtomicBool::new(true));
+        let thread_run_clone = thread_run.clone();
 
-        // Spawn worker thread.
-        let thread_handle = Some(Self::spawn_thread(
-            receiver,
-            prod,
-            sample_rate,
-            channel_count,
-            network,
-            thread_run.clone()
-        ));
-
-        Self {
-            thread_run,
-            thread_handle,
-        }
-    }
-
-    /// Spawn the sampling thread.
-    fn spawn_thread(receiver: Receiver<MidiMessage>,
-                    mut prod: Producer<f32, Arc<SharedRb<f32, Vec<MaybeUninit<f32>>>>>,
-                    sample_rate: usize,
-                    channel_count: usize,
-                    mut network: Box<dyn OldSignal<(Frequency, Time), Sample>>,
-                    thread_run: Arc<AtomicBool>)
-        -> JoinHandle<()>
-    {
+        // Create thread
         let time_step = 1.0 / sample_rate as f64;
 
         let mut time = 0.0;
         let mut voices: HashSet<u8> = HashSet::new();
 
-        std::thread::spawn(move || {
+        let thread_handle = std::thread::spawn(move || {
             // Run until cancellation requested.
-            while thread_run.load(Ordering::SeqCst) {
+            while thread_run_clone.load(Ordering::Relaxed) {
                 // Receive new midi notes.
                 while let Ok(msg) = receiver.try_recv() {
                     match msg {
@@ -90,25 +68,37 @@ impl MidiSynth {
 
                     // A simple averaging coefficient so that the audio doesn't clip
                     // TODO: figure out the 'proper' way to mix multiple voices.
-                    let sample_coeff = if voices.is_empty() { 0.0 } else { 1.0 / voices.len() as f64 };
+                    //let sample_coeff = if voices.is_empty() { 0.0 } else { 1.0 / voices.len() as f64 };
 
                     // Update time
                     time += time_step;
+                    input_time.push(time);
 
                     for midi_note in &voices {
-                        // Calculate frequency of midi note.
-                        let freq = 440.0 * f64::powf(2.0, (*midi_note as f64 - 69.0) / 12.0);
+                        input_note.push(*midi_note);
 
-                        // Sample the network at multiple octaves.
-                        const OCTAVES: usize = 7;
-                        let mut amplitude = 0.5;
-                        let mut octave_freq = freq;
-
-                        for _ in 0..OCTAVES {
-                            sample += network.evaluate((time, octave_freq)) * amplitude * sample_coeff;
-                            amplitude *= 0.3;
-                            octave_freq *= 2.0;
+                        if let Some(new_sample) = network.sample() {
+                            sample = new_sample;
                         }
+                        else {
+                            sample = 0.0;
+                        }
+
+                        break;
+
+                        //// Calculate frequency of midi note.
+                        //let freq = 440.0 * f64::powf(2.0, (*midi_note as f64 - 69.0) / 12.0);
+
+                        //// Sample the network at multiple octaves.
+                        //const OCTAVES: usize = 7;
+                        //let mut amplitude = 0.5;
+                        //let mut octave_freq = freq;
+
+                        //for _ in 0..OCTAVES {
+                        //    sample += network.evaluate((time, octave_freq)) * amplitude * sample_coeff;
+                        //    amplitude *= 0.3;
+                        //    octave_freq *= 2.0;
+                        //}
                     }
 
                     // Push one sample for each channel.
@@ -119,7 +109,12 @@ impl MidiSynth {
                 // Sleep for a few ms so we aren't just spinning.
                 std::thread::sleep(THREAD_SLEEP);
             }
-        })
+        });
+
+        Self {
+            thread_run,
+            thread_handle: Some(thread_handle),
+        }
     }
 }
 

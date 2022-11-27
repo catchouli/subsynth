@@ -1,5 +1,3 @@
-#![feature(associated_type_defaults)]
-
 pub mod audio_device;
 pub mod midi_device;
 pub mod synth;
@@ -7,62 +5,50 @@ pub mod signal;
 pub mod types;
 pub mod oscillators;
 
+use std::f64::consts::PI;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::{error::Error, thread::sleep, time::Duration};
 use midi_control::MidiMessage;
 use ringbuf::HeapRb;
+use signal::Continuous;
 
 use crate::audio_device::AudioOutput;
 use crate::midi_device::MidiInput;
-use crate::oscillators::SineWaveOscillator;
+use crate::signal::{Discrete, lift2};
 use crate::synth::MidiSynth;
 
 /// The size of the audio buffer.
 const AUDIO_BUFFER_SIZE: usize = 2048;
+
+/// Creates the synth network.
+fn synth_network(input_time: &mut Discrete<f64>, input_note: &mut Discrete<u8>) -> Continuous<f64> {
+    // Create time signal.
+    let mut time = input_time.hold();
+
+    // Create frequency signal.
+    let mut frequency = input_note.hold().map(|note| {
+        440.0 * f64::powf(2.0, (note as f64 - 69.0) / 12.0)
+    });
+
+    // Create oscillator.
+    let oscillator = lift2(&mut time, &mut frequency, |time, frequency| {
+        f64::sin(2.0 * PI * time * frequency)
+    });
+
+    oscillator
+}
 
 /// Start standalone command-line synth application.
 fn main() -> Result<(), Box<dyn Error>> {
     // Initialise logging.
     env_logger::init();
 
-    signal::test();
-    panic!("Done");
-
     // Create synth network.
-    //let mut evt_freq = Event::<f64, Frequency>::new(0.0, 0.0);
-    //evt_freq.push(0.0, 1.0)?;
-    //evt_freq.push(0.0, 2.0)?;
-    //evt_freq.push(1.0, 3.0)?;
-    //evt_freq.push(2.0, 4.0)?;
-    //evt_freq.push(9.0, 100.0)?;
+    let mut input_time = Discrete::<f64>::new();
+    let mut input_note = Discrete::<u8>::new();
 
-    //let mut signal = OnEventSignal::new(0.0, evt_freq, |time: f64, cur_value: f64, event: Frequency| {
-    //    let new_value = cur_value + event;
-    //    println!("Updating signal value from {cur_value} to {new_value} at time {time}");
-    //    new_value
-    //});
-
-    //for i in 0..10 {
-    //    println!("Evaluating signal at time {i}");
-    //    println!("Signal value at time {}: {}", i, signal.evaluate(i as f64));
-    //}
-
-    //let mut sine_signal = OnEventSignal::new(0.0, Box::new(always()), |time: f64, _: f64, _: ()| {
-    //    let new_value = f64::sin(time);
-    //    println!("new value for sine signal at time {}: {}", time, new_value);
-    //    new_value
-    //});
-
-    //for i in 0..1000 {
-    //    let time = i as f64 / 100.0;
-    //    println!("Evaluating sine signal at time {time}");
-    //    println!("Sine signal value at time {}: {}", i, sine_signal.evaluate(time));
-    //}
-
-    //panic!("Done");
-
-    let network = SineWaveOscillator::new();
+    let network = synth_network(&mut input_time, &mut input_note);
 
     // Create mpsc channel for midi data.
     let (sender, receiver) = std::sync::mpsc::channel::<MidiMessage>();
@@ -84,11 +70,13 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut _midi_input = MidiInput::connect("SubSynth", midi_device, sender)?;
 
     // Create sine wave oscillator.
-    let _oscillator = MidiSynth::new(receiver,
+    let _midi_synth = MidiSynth::new(receiver,
                                      prod,
                                      audio_output.sample_rate() as usize,
                                      audio_output.channel_count() as usize,
-                                     Box::new(network));
+                                     input_time,
+                                     input_note,
+                                     network);
 
     // Register ctrl-c handler for clean exit.
     let should_exit = Arc::new(AtomicBool::new(false));
