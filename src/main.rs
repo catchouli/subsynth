@@ -1,3 +1,5 @@
+#![feature(associated_type_defaults)]
+
 pub mod audio_device;
 pub mod midi_device;
 pub mod synth;
@@ -24,7 +26,42 @@ fn main() -> Result<(), Box<dyn Error>> {
     // Initialise logging.
     env_logger::init();
 
+    signal::test();
+    panic!("Done");
+
     // Create synth network.
+    //let mut evt_freq = Event::<f64, Frequency>::new(0.0, 0.0);
+    //evt_freq.push(0.0, 1.0)?;
+    //evt_freq.push(0.0, 2.0)?;
+    //evt_freq.push(1.0, 3.0)?;
+    //evt_freq.push(2.0, 4.0)?;
+    //evt_freq.push(9.0, 100.0)?;
+
+    //let mut signal = OnEventSignal::new(0.0, evt_freq, |time: f64, cur_value: f64, event: Frequency| {
+    //    let new_value = cur_value + event;
+    //    println!("Updating signal value from {cur_value} to {new_value} at time {time}");
+    //    new_value
+    //});
+
+    //for i in 0..10 {
+    //    println!("Evaluating signal at time {i}");
+    //    println!("Signal value at time {}: {}", i, signal.evaluate(i as f64));
+    //}
+
+    //let mut sine_signal = OnEventSignal::new(0.0, Box::new(always()), |time: f64, _: f64, _: ()| {
+    //    let new_value = f64::sin(time);
+    //    println!("new value for sine signal at time {}: {}", time, new_value);
+    //    new_value
+    //});
+
+    //for i in 0..1000 {
+    //    let time = i as f64 / 100.0;
+    //    println!("Evaluating sine signal at time {time}");
+    //    println!("Sine signal value at time {}: {}", i, sine_signal.evaluate(time));
+    //}
+
+    //panic!("Done");
+
     let network = SineWaveOscillator::new();
 
     // Create mpsc channel for midi data.

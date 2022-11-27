@@ -2,7 +2,7 @@
 
 use std::f64::consts::PI;
 
-use crate::{types::*, signal::Signal};
+use crate::{types::*, signal::OldSignal};
 
 /// A simple sine wave oscillator that can be sampled at a given time and frequency.
 pub struct SineWaveOscillator {
@@ -20,7 +20,7 @@ impl SineWaveOscillator {
     }
 }
 
-impl Signal<(Time, Frequency), Sample> for SineWaveOscillator {
+impl OldSignal<(Time, Frequency), Sample> for SineWaveOscillator {
     fn evaluate(&mut self, (time, frequency): (Time, Frequency)) -> Sample {
         SineWaveOscillator::sample_sine(time, frequency)
     }

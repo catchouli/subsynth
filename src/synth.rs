@@ -8,7 +8,7 @@ use std::sync::{Arc, atomic::{AtomicBool, Ordering}, mpsc::Receiver};
 use midi_control::MidiMessage;
 use ringbuf::{Producer, SharedRb};
 
-use crate::signal::Signal;
+use crate::signal::OldSignal;
 use crate::types::*;
 
 /// The amount of time for the thread to sleep between processing new midi inputs and re-filling
@@ -28,10 +28,10 @@ impl MidiSynth {
                prod: Producer<f32, Arc<SharedRb<f32, Vec<MaybeUninit<f32>>>>>,
                sample_rate: usize,
                channel_count: usize,
-               network: Box<dyn Signal<(Frequency, Time), Sample>>)
+               network: Box<dyn OldSignal<(Frequency, Time), Sample>>)
         -> Self
     {
-        log::info!("Starting oscillator thread");
+        log::info!("Starting midi synth thread");
 
         // Create atomic bool for controlling thread exit.
         let thread_run = Arc::new(AtomicBool::new(true));
@@ -57,7 +57,7 @@ impl MidiSynth {
                     mut prod: Producer<f32, Arc<SharedRb<f32, Vec<MaybeUninit<f32>>>>>,
                     sample_rate: usize,
                     channel_count: usize,
-                    mut network: Box<dyn Signal<(Frequency, Time), Sample>>,
+                    mut network: Box<dyn OldSignal<(Frequency, Time), Sample>>,
                     thread_run: Arc<AtomicBool>)
         -> JoinHandle<()>
     {
