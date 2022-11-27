@@ -1,16 +1,18 @@
-//! A simple frp-like signals implementation.
+//! A simple push-frp-like signals implementation, implemented with callbacks.
 
-use std::{f64::consts::PI, sync::{Arc, Mutex}};
+use std::sync::{Arc, Mutex};
 
+/// A callback for signals to notify their dependents that their value has been updated.
 type CallbackClosure = Box<dyn FnMut() -> () + Send + Sync + 'static>;
 
-/// A trait for "signals" which have an input and an output type, and can be evaluated for the
-/// given input.
-pub trait OldSignal<In, Out>: Send {
-    /// Evaluate this signal for the given input, yielding an output.
-    fn evaluate(&mut self, input: In) -> Out;
-}
-
+/// The "base" component of Discrete and Continous signals, which is basically a thread-safe value
+/// holder, which also holds references to the update callbacks of those dependent on it.
+///
+/// For example, the signal `input_time: Discrete<f64>` which holds the input time will have one of
+/// these, and will also have references to the callback closures for all derived signals.
+///
+/// This allows the Discrete<T> and Continuous<T> signals themselves to be cloneable and threadsafe
+/// without the user having to be aware of Arcs or Mutexes etc.
 #[derive(Clone)]
 struct SignalBase<T> {
     value: Arc<Mutex<Option<T>>>,
@@ -18,6 +20,8 @@ struct SignalBase<T> {
 }
 
 impl<T: Clone + PartialEq> SignalBase<T> {
+    /// Create a new SignalBase component with a current value of None and an empty list of
+    /// dependents.
     fn new() -> Self {
         Self {
             value: Arc::new(Mutex::new(None)),
@@ -25,18 +29,23 @@ impl<T: Clone + PartialEq> SignalBase<T> {
         }
     }
 
+    /// Attach a new dependent signal to this one so it will be notified whenever there's a change
+    /// in value.
+    /// TODO: we should probably have anything that attaches also detach automatically when it's dropped.
     fn attach<F>(&mut self, closure: F)
         where F: FnMut() -> () + Send + Sync + 'static
     {
         self.dependents.lock().unwrap().push(Box::new(closure));
     }
 
+    /// Update the value of this signal, and if the value is different, notify all dependents that
+    /// it's changed.
     fn set(&mut self, value: T) {
         let mut cur_value = self.value.lock().unwrap();
         if cur_value.as_ref() != Some(&value) {
             cur_value.replace(value);
 
-            // Drop the borrow explicitly so it can be reborrowed in callbacks
+            // Drop the lock so it can be locked in callbacks.
             drop(cur_value);
 
             let mut dependents = self.dependents.lock().unwrap();
@@ -46,11 +55,13 @@ impl<T: Clone + PartialEq> SignalBase<T> {
         }
     }
 
+    /// Get the current value of the signal.
     fn get(&self) -> Option<T> {
         self.value.lock().unwrap().clone()
     }
 }
 
+/// A discrete signal that can have its value set directly to introduce external input.
 #[derive(Clone)]
 pub struct Discrete<T> {
     base: SignalBase<T>,
@@ -60,21 +71,27 @@ impl<T> Discrete<T>
 where
     T: Clone + PartialEq + Send + Sync + 'static
 {
+    /// Create a new discrete signal of the given type, with the initial value of None.
     pub fn new() -> Self {
         Self {
             base: SignalBase::new(),
         }
     }
 
+    /// Push a new value for the signal.
     pub fn push(&mut self, value: T) {
         self.base.set(value);
     }
 
+    /// Lift the discrete signal into a continous signal that holds the current value whenever it
+    /// changes.
     pub fn hold(&mut self) -> Continuous<T> {
         Continuous::new1(&mut self.base, |a| a)
     }
 }
 
+/// A continuous signal that can be composed from other discrete and continuous signals and
+/// a closure.
 #[derive(Clone)]
 pub struct Continuous<T> {
     base: SignalBase<T>,
@@ -84,6 +101,9 @@ impl<T> Continuous<T>
 where
     T: Clone + PartialEq + Send + Sync + 'static,
 {
+    /// The internal definition of lift1 ,which is used to provide hold for discrete signals, and
+    /// map/lift1 for continuous signals. Produces a new signal from the given input signal and a
+    /// closure.
     fn new1<A, F>(parent: &mut SignalBase<A>, update: F) -> Self
     where
         A: Clone + PartialEq + Send + Sync + 'static,
@@ -104,6 +124,9 @@ where
         signal
     }
 
+    /// The internal definition of lift2 ,which is used to provide lift2 for continuous signals.
+    /// Produces a new signal from the given input signals and a closure.
+    /// TODO: work out how to make these for any arity.
     fn new2<A, B, F>(parent_a: &mut SignalBase<A>, parent_b: &mut SignalBase<B>, update: F) -> Self
     where
         A: Clone + PartialEq + Send + Sync + 'static,
@@ -133,10 +156,12 @@ where
         signal
     }
 
+    /// Sample the current value of the signal.
     pub fn sample(&self) -> Option<T> {
         self.base.get()
     }
 
+    /// Apply a closure to the signal, producing a new signal.
     pub fn map<F, B>(&mut self, closure: F) -> Continuous<B>
     where
         B: Clone + PartialEq + Send + Sync + 'static,
@@ -146,6 +171,7 @@ where
     }
 }
 
+/// Apply a function to the given signal, producing a new signal.
 pub fn lift1<F, A, B>(signal: &mut Continuous<A>, closure: F) -> Continuous<B>
 where
     A: Clone + PartialEq + Send + Sync + 'static,
@@ -155,6 +181,7 @@ where
     Continuous::new1(&mut signal.base, closure)
 }
 
+/// Apply a function to the given signals, producing a new signal.
 pub fn lift2<F, A, B, C>(signal_a: &mut Continuous<A>, signal_b: &mut Continuous<B>, closure: F) -> Continuous<C>
 where
     A: Clone + PartialEq + Send + Sync + 'static,
@@ -163,31 +190,4 @@ where
     F: Fn(A, B) -> C + Clone + Send + Sync + 'static,
 {
     Continuous::new2(&mut signal_a.base, &mut signal_b.base, closure)
-}
-
-// How to use
-pub fn test() {
-    let mut time: Discrete<f64> = Discrete::new();
-    let mut frequency: Discrete<f64> = Discrete::new();
-
-    let time_hold: Continuous<f64> = time.hold();
-
-    let sine_oscillator: Continuous<f64> = lift2(&mut time.hold(), &mut frequency.hold(), |time: f64, frequency: f64| {
-        f64::sin(2.0 * PI * time * frequency)
-    });
-
-    // For each time step
-    for i in 0..100 {
-        // Update time
-        let new_time = i as f64 / 100.0;
-        time.push(new_time);
-
-        // Push new frequency if it's changed, comes from external midi input
-        frequency.push(261.0);
-
-        // Sample oscillator
-        let sample = sine_oscillator.sample();
-        let time_sample = time_hold.sample();
-        log::info!("Time = {time_sample:?}, sample = {sample:?}");
-    }
 }
