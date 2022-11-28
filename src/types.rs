@@ -8,3 +8,6 @@ pub type Frequency = f64;
 
 /// A type representing the output of a synth network.
 pub type Sample = f64;
+
+/// A type representing a midi note.
+pub type MidiNote = u8;

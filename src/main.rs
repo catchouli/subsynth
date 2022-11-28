@@ -9,9 +9,10 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::{error::Error, thread::sleep, time::Duration};
 use midi_control::MidiMessage;
-use functions::{midi_note_to_frequency, sine_wave};
+use functions::{midi_note_to_frequency, sine_wave, triangle_wave};
 use ringbuf::HeapRb;
 use signal::Continuous;
+use types::{Sample, MidiNote};
 
 use crate::audio_device::AudioOutput;
 use crate::midi_device::MidiInput;
@@ -21,23 +22,52 @@ use crate::synth::MidiSynth;
 /// The size of the audio buffer.
 const AUDIO_BUFFER_SIZE: usize = 2048;
 
-/// Create a simple synth network that takes a time and midi note as input and outputs a simple sine wave.
-fn synth_network(input_time: &mut Discrete<f64>, input_note: &mut Discrete<u8>) -> Continuous<f64> {
+/// Create a simple synth network that takes a time and midi note(s) as input and outputs a simple
+/// sine wave. Returns a discrete input signal for each midi note pressed (up to `voices`), and a
+/// continuous signal that can be sampled to get the output of the synth.
+/// TODO: it might be worth making a new type `SynthNetwork` that contains these signals and the
+///       input_time signal and return that instead.
+fn synth_network(input_time: &mut Discrete<f64>, voice_count: usize)
+    -> (Vec<Discrete<MidiNote>>, Continuous<Sample>)
+{
+    if voice_count == 0 {
+        panic!("voices cannot be 0");
+    }
+
     // Create time signal.
     let mut time = input_time.hold();
 
-    // Create frequency signal.
-    let mut frequency = input_note.hold().map(midi_note_to_frequency);
+    // Create input note signals.
+    let mut input_notes: Vec<Discrete<MidiNote>> = std::iter::repeat_with(Discrete::new).take(voice_count).collect();
 
-    // Create oscillator.
-    let oscillator = lift2(time.as_mut(), frequency.as_mut(), sine_wave);
+    // Create an output oscillator for each voice.
+    let mut voices: Vec<Continuous<Sample>> = input_notes.iter_mut().map(|input_note| {
+        // Create frequency signal.
+        let mut frequency = input_note.hold().map(midi_note_to_frequency);
 
-    oscillator
+        // Create oscillator for voice.
+        let oscillator = lift2(time.as_mut(), frequency.as_mut(), triangle_wave);
+
+        oscillator
+    }).collect();
+
+    // Mix voices.
+    // TODO: find out if just adding the samples is correct, or if there's a better way.
+    // TODO: sometimes one of the voices doesn't seem to play if you start playing them in the
+    // wrong order?
+    let mut mixed_signal = voices.swap_remove(0);
+    for voice in voices.iter_mut() {
+        mixed_signal = lift2(mixed_signal.as_mut(), voice.as_mut(), move |a, b| {
+            a + b
+        });
+    }
+
+    (input_notes, mixed_signal)
 }
 
 /// A standalone command-line midi synth host.
 fn midi_synth_host(input_time: Discrete<f64>,
-                   input_note: Discrete<u8>,
+                   input_notes: Vec<Discrete<u8>>,
                    network: Continuous<f64>)
     -> Result<(), Box<dyn Error>>
 {
@@ -69,7 +99,7 @@ fn midi_synth_host(input_time: Discrete<f64>,
                                      audio_output.sample_rate() as usize,
                                      audio_output.channel_count() as usize,
                                      input_time,
-                                     input_note,
+                                     input_notes,
                                      network);
 
     // Register ctrl-c handler for clean exit.
@@ -109,10 +139,9 @@ fn signal_on_ctrlc(ctrlc_sent: Arc<AtomicBool>) -> Result<(), Box<dyn Error>> {
 fn main() -> Result<(), Box<dyn Error>> {
     // Create synth network.
     let mut input_time = Discrete::<f64>::new();
-    let mut input_note = Discrete::<u8>::new();
 
-    let network = synth_network(input_time.as_mut(), input_note.as_mut());
+    let (input_notes, network) = synth_network(input_time.as_mut(), 2);
 
     // Start standalone synth host.
-    midi_synth_host(input_time, input_note, network)
+    midi_synth_host(input_time, input_notes, network)
 }

@@ -28,7 +28,7 @@ impl MidiSynth {
                sample_rate: usize,
                channel_count: usize,
                mut input_time: Discrete<f64>,
-               mut input_note: Discrete<u8>,
+               mut input_notes: Vec<Discrete<u8>>,
                network: Continuous<f64>)
         -> Self
     {
@@ -64,8 +64,6 @@ impl MidiSynth {
 
                 // Fill audio buffer.
                 while prod.free_len() > channel_count {
-                    let mut sample = 0.0;
-
                     // A simple averaging coefficient so that the audio doesn't clip
                     // TODO: figure out the 'proper' way to mix multiple voices.
                     //let sample_coeff = if voices.is_empty() { 0.0 } else { 1.0 / voices.len() as f64 };
@@ -74,31 +72,24 @@ impl MidiSynth {
                     time += time_step;
                     input_time.push(time);
 
-                    for midi_note in &voices {
-                        input_note.push(*midi_note);
-
-                        if let Some(new_sample) = network.sample() {
-                            sample = new_sample;
+                    // Update input for each voice
+                    let voices: Vec<u8> = voices.iter().map(|x| *x).collect();
+                    for (i, input_note) in input_notes.iter_mut().enumerate() {
+                        if i < voices.len() {
+                            input_note.push(voices[i]);
                         }
                         else {
-                            sample = 0.0;
+                            input_note.push(0);
                         }
+                    }
 
-                        break;
-
-                        //// Calculate frequency of midi note.
-                        //let freq = 440.0 * f64::powf(2.0, (*midi_note as f64 - 69.0) / 12.0);
-
-                        //// Sample the network at multiple octaves.
-                        //const OCTAVES: usize = 7;
-                        //let mut amplitude = 0.5;
-                        //let mut octave_freq = freq;
-
-                        //for _ in 0..OCTAVES {
-                        //    sample += network.evaluate((time, octave_freq)) * amplitude * sample_coeff;
-                        //    amplitude *= 0.3;
-                        //    octave_freq *= 2.0;
-                        //}
+                    // Sample network
+                    let sample;
+                    if let Some(new_sample) = network.sample() {
+                        sample = new_sample;
+                    }
+                    else {
+                        sample = 0.0;
                     }
 
                     // Push one sample for each channel.
