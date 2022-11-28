@@ -9,7 +9,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::{error::Error, thread::sleep, time::Duration};
 use midi_control::MidiMessage;
-use functions::{midi_note_to_frequency, sine_wave};
+use functions::{midi_note_to_frequency, triangle_wave};
 use ringbuf::HeapRb;
 use signal::Continuous;
 
@@ -30,7 +30,7 @@ fn synth_network(input_time: &mut Discrete<f64>, input_note: &mut Discrete<u8>) 
     let mut frequency = input_note.hold().map(midi_note_to_frequency);
 
     // Create oscillator.
-    let oscillator = lift2(&mut time, &mut frequency, sine_wave);
+    let oscillator = lift2(&mut time, &mut frequency, triangle_wave);
 
     oscillator
 }
